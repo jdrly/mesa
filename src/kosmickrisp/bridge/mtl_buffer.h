@@ -19,8 +19,11 @@ uint64_t mtl_buffer_get_gpu_address(mtl_buffer *buffer);
 /* Gets CPU address */
 void *mtl_get_contents(mtl_buffer *buffer);
 
-/* Allocation from buffer */
+/* Allocation from buffer. sparse says whether the caller made buffer with
+ * mtl_new_sparse_buffer; the texture then takes its placement sparse page
+ * size. */
 mtl_texture *mtl_new_texture_with_descriptor_linear(
-   mtl_buffer *buffer, const struct kk_image_layout *layout, uint64_t offset);
+   mtl_buffer *buffer, const struct kk_image_layout *layout, uint64_t offset,
+   bool sparse);
 
 #endif /* MTL_BUFFER_H */

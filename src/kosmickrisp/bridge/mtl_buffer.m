@@ -64,14 +64,16 @@ mtl_new_texture_descriptor(const struct kk_image_layout *layout)
 mtl_texture *
 mtl_new_texture_with_descriptor_linear(mtl_buffer *buffer,
                                        const struct kk_image_layout *layout,
-                                       uint64_t offset)
+                                       uint64_t offset, bool sparse)
 {
    @autoreleasepool {
       id<MTLBuffer> buf = (id<MTLBuffer>)buffer;
       MTLTextureDescriptor *descriptor = [mtl_new_texture_descriptor(layout) autorelease];
       descriptor.resourceOptions = buf.resourceOptions;
-      if ([buf respondsToSelector:@selector(sparseBufferTier)] &&
-          buf.sparseBufferTier != MTLBufferSparseTierNone)
+      /* The caller's record, never buf.sparseBufferTier: on macOS 26 that
+       * selector throws on every buffer although respondsToSelector: says
+       * yes (jdrly/gw2-on-mac#339). */
+      if (sparse)
          descriptor.placementSparsePageSize = MTLSparsePageSize64;
       id<MTLTexture> texture = [buf newTextureWithDescriptor:descriptor offset:offset bytesPerRow:layout->linear_stride_B];
 

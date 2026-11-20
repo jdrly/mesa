@@ -27,7 +27,7 @@ mtl_get_contents(mtl_buffer *buffer)
 mtl_texture *
 mtl_new_texture_with_descriptor_linear(mtl_buffer *buffer,
                                        const struct kk_image_layout *layout,
-                                       uint64_t offset)
+                                       uint64_t offset, bool sparse)
 {
    return NULL;
 }

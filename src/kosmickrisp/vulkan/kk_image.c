@@ -1140,10 +1140,12 @@ kk_image_plane_create_texture(struct kk_image_plane *plane,
 {
    uint64_t mem_offset_B = plane->mem_offset_B + offset_B;
 
-   /* Linear textures in Metal need to be allocated through a buffer... */
+   /* Linear textures in Metal need to be allocated through a buffer...
+    * Device memory's buffer comes from a heap or from host memory, never
+    * from mtl_new_sparse_buffer, so it isn't sparse. */
    if (plane->layout.linear)
       return mtl_new_texture_with_descriptor_linear(plane->mem->bo->map, layout,
-                                                    mem_offset_B);
+                                                    mem_offset_B, false);
 
    return mtl_new_texture_with_descriptor(plane->mem->bo->mtl_handle, layout,
                                           mem_offset_B);

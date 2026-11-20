@@ -35,6 +35,16 @@ struct kk_buffer {
 VK_DEFINE_NONDISP_HANDLE_CASTS(kk_buffer, vk.base, VkBuffer,
                                VK_OBJECT_TYPE_BUFFER)
 
+/* Whether kk_CreateBuffer made the buffer's Metal handle a placement sparse
+ * buffer (mtl_new_sparse_buffer). This is the driver's own record: Metal's
+ * -[MTLBuffer sparseBufferTier] throws "unrecognized selector" on macOS 26
+ * (jdrly/gw2-on-mac#339), so nothing asks Metal. */
+static inline bool
+kk_buffer_is_sparse(const struct kk_buffer *buffer)
+{
+   return buffer->vk.create_flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT;
+}
+
 static inline uint32_t
 kk_buffer_residency(const struct kk_buffer *buffer, uint64_t offset)
 {

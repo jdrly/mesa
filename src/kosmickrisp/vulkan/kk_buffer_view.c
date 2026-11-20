@@ -125,7 +125,8 @@ kk_CreateBufferView(VkDevice _device, const VkBufferViewCreateInfo *pCreateInfo,
    };
    view->mtl_texel_buffer_handle = mtl_new_texture_with_descriptor_linear(
       buffer->metal.handle, &layout,
-      kk_buffer_mtl_offset(buffer, aligned_offset_B));
+      kk_buffer_mtl_offset(buffer, aligned_offset_B),
+      kk_buffer_is_sparse(buffer));
    if (!view->mtl_texel_buffer_handle) {
       vk_buffer_view_destroy(&dev->vk, pAllocator, &view->vk);
       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);

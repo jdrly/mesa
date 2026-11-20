@@ -49,7 +49,7 @@ kk_CreateBuffer(VkDevice device, const VkBufferCreateInfo *pCreateInfo,
    if (!buffer)
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   if (buffer->vk.create_flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT) {
+   if (kk_buffer_is_sparse(buffer)) {
       uint64_t size_B = align64(buffer->vk.size, KK_SPARSE_PAGE_SIZE);
       buffer->metal.handle = mtl_new_sparse_buffer(dev->mtl_handle, size_B);
       if (buffer->metal.handle == NULL) {
