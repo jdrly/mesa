@@ -45,7 +45,9 @@ against the engine's file and publishes it. Its header says what each step prove
 minutes are what GitHub limits, and it has disabled my forks' workflows before. So: one run at a
 time, one push per pull request after review, and never a push to find out whether something
 builds. Locally you can run `actionlint`, `zsh -n` on the scripts, and
-`python3 -I .github/gw2/compare.py selftest <the engine's dylib>`.
+`python3 -I .github/gw2/compare.py selftest <the engine's dylib> <the engine's ICD manifest>` (Mach9's
+release tarball, `lib/external/libvulkan_kosmickrisp.dylib` and
+`share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json`).
 
 ## Where my code goes
 

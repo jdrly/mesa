@@ -158,7 +158,10 @@ record() {
 
 tool_inputs() {
   local changed=${1:?} inputs hit
-  inputs=$(ninja -C "$TOOLS_BUILD" -t inputs $TOOLS | sed -n 's|^\(\.\./\)*src-mesa/||p')
+  # the tools' inputs ninja knows from the build files, and the headers the compiler read for each
+  # object, from its deps log (the tree built nothing but the tools)
+  inputs=$({ ninja -C "$TOOLS_BUILD" -t inputs $TOOLS; ninja -C "$TOOLS_BUILD" -t deps | sed -n 's/^    //p'; } |
+    sed -n 's|^\(\.\./\)*src-mesa/||p' | LC_ALL=C sort -u)
   hit=$(grep -Fxf "$changed" <<<"$inputs" || true)
   if [[ -n $hit ]]; then
     echo "::error::this commit changes inputs of the stage 1 tools, which are built from the engine's commit only: $hit"
@@ -180,7 +183,7 @@ test_native() {
     st=0
     "$exe" stand-in-plain >"$out/base.txt" 2>&1 || st=$?
     cat "$out/base.txt"
-    if (( st != 1 )) || ! grep -q 'FAIL: the bridge sent the buffer .*sparseBufferTier' "$out/base.txt"; then
+    if (( st != 1 )) || ! grep -qx 'FAIL: the bridge sent the buffer sparseBufferTier' "$out/base.txt"; then
       echo "::error::against the engine's commit the stand-in case exited $st without failing on sparseBufferTier, so it doesn't test the bug"
       return 1
     fi
@@ -192,9 +195,9 @@ test_native() {
     st=0
     "$exe" $c >"$out/$c.txt" 2>&1 || st=$?
     cat "$out/$c.txt"
-    # only a real buffer the runner's Metal can't make may skip, never the plain one
+    # only the cases that need placement sparse may skip, where the device has none
     want=0
-    if (( st == 77 )) && [[ $c == (heap|nocopy|sparse) ]]; then
+    if (( st == 77 )) && [[ $c == (heap|sparse) ]]; then
       want=77
     fi
     (( st == want )) || failed+=("$c (exit $st)")

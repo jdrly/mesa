@@ -6,13 +6,16 @@
  *
  *   sparse_linear <case>
  *
- * Exits 0 when the case passes, 1 when it fails, 77 when this runner's Metal can't make the
- * buffer the case needs (it says which). Each case is its own process, so an exception or a
- * crash in one can't hide another.
+ * Exits 0 when the case passes, 1 when it fails, 77 when the case needs placement sparse and this
+ * runner's device says it has none (supportsPlacementSparse NO, or the property throws). A buffer
+ * the device should make and doesn't is a failure. Each case is its own process, so an exception
+ * or a crash in one can't hide another.
  *
  * Stand-in cases, on any Mac: mtl_new_texture_with_descriptor_linear gets a stand-in for the
  * buffer that logs every message it is sent and keeps the texture descriptor it is handed (it
- * forwards resourceOptions to a real buffer and makes no texture).
+ * forwards resourceOptions to a real buffer and makes no texture). It says it responds to
+ * sparseBufferTier and answers it itself with MTLBufferSparseTierNone, so a bridge that asks
+ * always gets as far as sending it, on any macOS.
  *   stand-in-plain   flag false: the descriptor keeps a new descriptor's placementSparsePageSize,
  *                    and nothing sends the buffer sparseBufferTier or asks whether it responds
  *                    to it. Built with -DGW2_BASE against the engine's commit, this case has to
@@ -23,9 +26,12 @@
  * Real buffers, each made as the driver makes it, a texture asked for with the flag the driver
  * passes for it:
  *   plain    a shared buffer from the device, flag false. Never skipped.
- *   heap     mtl_new_heap and mtl_new_buffer_with_length (device memory, kk_bo.c), flag false
- *   nocopy   mtl_new_buffer_with_bytes_no_copy (imported host memory), flag false
- *   sparse   mtl_new_sparse_buffer (a VK_BUFFER_CREATE_SPARSE_BINDING_BIT buffer), flag true
+ *   heap     mtl_new_heap and mtl_new_buffer_with_length (device memory, kk_bo.c), flag false.
+ *            The heap asks for a placement sparse page size, as the driver's does, so it skips
+ *            only where the device has no placement sparse.
+ *   nocopy   mtl_new_buffer_with_bytes_no_copy (imported host memory), flag false. Never skipped.
+ *   sparse   mtl_new_sparse_buffer (a VK_BUFFER_CREATE_SPARSE_BINDING_BIT buffer), flag true. It
+ *            skips only where the device has no placement sparse.
  * Each has to give a texture without an exception. Then the case asks Metal itself for the
  * buffer's sparseBufferTier, inside @try: where that works (macOS 27), whether it is
  * MTLBufferSparseTierNone has to match the flag, which is the evidence that the flag gives the
@@ -48,6 +54,7 @@
 #include <string.h>
 
 #define SKIP 77
+#define HEAP_B (16u * KK_SPARSE_PAGE_SIZE)
 #define WIDTH_PX 256u
 #define STRIDE_B (WIDTH_PX * 4u)
 
@@ -72,12 +79,20 @@
 @implementation GW2BufferSpy
 - (NSMethodSignature *)methodSignatureForSelector:(SEL)sel
 {
+   if (sel == @selector(sparseBufferTier))
+      return [NSMethodSignature signatureWithObjCTypes:"q@:"];
    return [(NSObject *)target methodSignatureForSelector:sel];
 }
 
 - (void)forwardInvocation:(NSInvocation *)invocation
 {
    [sent addObject:NSStringFromSelector(invocation.selector)];
+   if (invocation.selector == @selector(sparseBufferTier)) {
+      /* answered here, never by the real buffer, whose answer may be an exception */
+      NSInteger none = MTLBufferSparseTierNone;
+      [invocation setReturnValue:&none];
+      return;
+   }
    if (invocation.selector == @selector(newTextureWithDescriptor:offset:bytesPerRow:)) {
       MTLTextureDescriptor *descriptor = nil;
       [invocation getArgument:&descriptor atIndex:2];
@@ -93,7 +108,7 @@
 - (BOOL)respondsToSelector:(SEL)sel
 {
    [sent addObject:[@"respondsToSelector:" stringByAppendingString:NSStringFromSelector(sel)]];
-   return [(NSObject *)target respondsToSelector:sel];
+   return sel == @selector(sparseBufferTier) || [(NSObject *)target respondsToSelector:sel];
 }
 @end
 
@@ -158,6 +173,18 @@ stand_in(id<MTLDevice> dev, bool sparse)
    return status;
 }
 
+/* 1: the device has placement sparse, 0: it hasn't, -1: the property threw */
+static int
+placement_sparse(id<MTLDevice> dev)
+{
+   @try {
+      return dev.supportsPlacementSparse ? 1 : 0;
+   } @catch (NSException *e) {
+      printf("supportsPlacementSparse throws here (%s: %s)\n", e.name.UTF8String, e.reason.UTF8String);
+      return -1;
+   }
+}
+
 static int
 real(id<MTLDevice> dev, const char *kind)
 {
@@ -174,7 +201,7 @@ real(id<MTLDevice> dev, const char *kind)
          return 1;
       }
    } else if (!strcmp(kind, "heap")) {
-      heap = mtl_new_heap((mtl_device *)dev, KK_SPARSE_PAGE_SIZE, KK_MTL_RESOURCE_OPTIONS);
+      heap = mtl_new_heap((mtl_device *)dev, HEAP_B, KK_MTL_RESOURCE_OPTIONS);
       if (heap)
          buffer = mtl_new_buffer_with_length(heap, KK_SPARSE_PAGE_SIZE, 0u);
    } else if (!strcmp(kind, "nocopy")) {
@@ -190,8 +217,15 @@ real(id<MTLDevice> dev, const char *kind)
       return 1;
    }
    if (!buffer) {
-      printf("skip: this runner's Metal made no %s buffer\n", kind);
-      return SKIP;
+      /* only a case that needs placement sparse may skip, and only where the device has none */
+      int ps = strcmp(kind, "nocopy") ? placement_sparse(dev) : 1;
+      if (ps != 1) {
+         printf("skip: this runner's Metal made no %s buffer, and its device has %s placement sparse\n",
+                kind, ps == 0 ? "no" : "maybe no");
+         return SKIP;
+      }
+      printf("FAIL: the device has placement sparse, but made no %s buffer\n", kind);
+      return 1;
    }
 
    struct kk_image_layout layout = texel_buffer_layout();

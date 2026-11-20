@@ -178,6 +178,10 @@ class MachO:
         refs, names = self.section("__DATA,__objc_selrefs"), self.section("__TEXT,__objc_methname")
         if refs is None or names is None:
             raise SystemExit(f"{self.path}: no __objc_selrefs or __objc_methname")
+        # the driver's bridge sends hundreds of selectors: an empty or torn table is a broken
+        # reading, never a pass
+        if refs["size"] == 0 or refs["size"] % 8:
+            raise SystemExit(f"{self.path}: __objc_selrefs is {refs['size']} bytes, not a nonempty list of 8-byte entries")
         out = []
         for i in range(refs["size"] // 8):
             raw, = struct.unpack_from("<Q", self.data, refs["offset"] + i * 8)
@@ -227,6 +231,8 @@ def gate(mine, theirs, mine_json, theirs_json):
     print(f"- report, not the gate: {len(sized)} of {len(nt)} named functions differ in size"
           + (f": {listing(sized, 40)}" if sized else ""))
     sels = mine.selectors()
+    r.check(len(sels) >= len(theirs.selectors()) // 2, f"{len(sels)} entries of __objc_selrefs read",
+            f"only {len(sels)} entries of __objc_selrefs read, the engine's file has {len(theirs.selectors())}")
     r.check(SELECTOR not in sels, f"none of the {len(sels)} entries of __objc_selrefs is `{SELECTOR}`",
             f"__objc_selrefs has `{SELECTOR}` {sels.count(SELECTOR)} time(s) among {len(sels)} entries")
     with open(mine_json) as f:
@@ -315,8 +321,11 @@ def compare_objects(base, head, changed):
         reasons = sorted(i for i in inputs
                          if (i.startswith("src:") and changed_src(i))
                          or (i.startswith("build:") and base["generated"].get(i) != head["generated"].get(i)))
+        # both builds come from one meson setup, so a compile command that differs means the trees
+        # aren't comparable, not that the commit touched the object
         if b[obj]["command"] != h[obj]["command"]:
-            reasons.append("its compile command")
+            bad.append(f"`{obj}`: its compile command isn't the base build's")
+            continue
         same = b[obj]["sha256"] == h[obj]["sha256"]
         if reasons:
             touched[obj] = (reasons, same)
@@ -338,6 +347,12 @@ def patched(base_dir, head_dir, changed):
     print(f"- changed paths: {listing(changed, 100)}")
     print(f"- {untouched} of {len(set(base['objects']) & set(head['objects']))} objects in both builds: none of "
           f"their inputs changed, and each is the base build's byte for byte")
+    # a compare where nothing is held to the base's bytes, or the dylib's objects changed, proves nothing
+    if not untouched:
+        bad.append("no object is untouched, so none was held to the base build's bytes")
+    for title, items in (("new", new), ("gone", removed)):
+        if items:
+            bad.append(f"{title} objects, which this compare can't hold to a base: {listing(items, 20)}")
     for x in bad:
         print(f"- **FAIL**: {x}")
     print(f"- differ from the base build: {len(differ)}" + (f": {listing(differ, 100)}" if differ else ""))
@@ -446,6 +461,18 @@ def selftest(engine, engine_json):
     at = data.index(SELECTOR.encode() + b"\0", names["offset"], names["offset"] + names["size"])
     out = run("the selector's name changed", patched_copy(lambda d: d.__setitem__(at, ord("S"))),
               False, f"none of the")
+    # an empty selector table: not a pass
+    refs_hdr = next(o for c, o, _ in m.commands if c == LC_SEGMENT_64 and data[o + 8:o + 24].rstrip(b"\0") == b"__DATA")
+    nsects = struct.unpack_from("<I", data, refs_hdr + 64)[0]
+    sect = next(refs_hdr + 72 + i * 80 for i in range(nsects)
+                if data[refs_hdr + 72 + i * 80:refs_hdr + 72 + i * 80 + 16].rstrip(b"\0") == b"__objc_selrefs")
+    try:
+        MachO("an empty selector table", patched_copy(lambda d: struct.pack_into("<Q", d, sect + 40, 0))).selectors()
+        good = False
+    except SystemExit as e:
+        good = "not a nonempty list" in str(e)
+    print(f"{'ok' if good else 'WRONG'}: an empty selector table is refused")
+    status.append(good)
     # another ICD manifest
     with tempfile.TemporaryDirectory() as t:
         other = os.path.join(t, "icd.json")
@@ -472,6 +499,11 @@ def selftest(engine, engine_json):
     head["generated"]["build:g.h"] = "x"
     bad, touched, _, _, _ = compare_objects(base, head, ["c.c"])
     good = good and bad == ["`b.o`: none of its inputs changed, and it isn't the base build's"]
+    # another compile command fails the object, it doesn't excuse it
+    head["generated"]["build:g.h"] = "y"
+    head["objects"]["a.o"]["command"] = "cc -O0"
+    bad, _, _, _, untouched = compare_objects(base, head, ["c.c"])
+    good = good and bad == ["`a.o`: its compile command isn't the base build's"] and untouched == 0
     print(f"{'ok' if good else 'WRONG'}: the object compare on made-up records")
     status.append(good)
     print("\n" + ("all checks passed" if all(status) else "failed: the self-test"))
