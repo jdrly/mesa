@@ -214,8 +214,9 @@ def gate(mine, theirs, mine_json, theirs_json):
     r.check(mine.exports == theirs.exports, f"exports the engine's {len(theirs.exports)} symbols: {listing(theirs.exports, 5)}",
             f"exports differ: missing {listing(set(theirs.exports) - set(mine.exports))}; "
             f"extra {listing(set(mine.exports) - set(theirs.exports))}")
-    mi = {n: l for n, l in mine.imports.items() if n not in FIX_IMPORTS}
-    ti = {n: l for n, l in theirs.imports.items() if n not in FIX_IMPORTS}
+    # (a fix's import may be gone; while it is there, it binds to the engine's library)
+    mi = {n: l for n, l in mine.imports.items() if n not in FIX_IMPORTS or n in theirs.imports}
+    ti = {n: l for n, l in theirs.imports.items() if n not in FIX_IMPORTS or n in mine.imports}
     if mi == ti:
         r.ok(f"imports the engine's {len(ti)} symbols, each from the same library, besides the fix's "
              f"{listing(FIX_IMPORTS)}")
@@ -484,6 +485,9 @@ def selftest(engine, engine_json):
         d[entry(imp) + 4] = 0x20
     out = run("the fix's file", patched_copy(fixed), False, "none of the 296 entries")
     status.append("mine has none, the engine's `objc_opt_respondsToSelector`" in out)
+    # the fix's import still there, but looked up in whatever the process has loaded: a difference
+    run("the fix's import bound flat", patched_copy(lambda d: struct.pack_into("<H", d, entry(imp) + 6, 0xff00)),
+        True, "objc_opt_respondsToSelector (flat / /usr/lib/libobjc.A.dylib)")
     # an empty selector table: not a pass
     refs_hdr = next(o for c, o, _ in m.commands if c == LC_SEGMENT_64 and data[o + 8:o + 24].rstrip(b"\0") == b"__DATA")
     nsects = struct.unpack_from("<I", data, refs_hdr + 64)[0]

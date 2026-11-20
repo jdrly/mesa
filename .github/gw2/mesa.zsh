@@ -177,7 +177,7 @@ test_native() {
   (( $#flags > 5 )) || { echo "::error::no compile flags of mtl_device.m"; return 1; }
   exe=$out/sparse_linear
   /usr/bin/clang "${flags[@]}" ${base:+-DGW2_BASE} -o "$exe" "$TESTS/native/sparse_linear.m" \
-    "$DRIVER_BUILD/$BRIDGE" -framework Foundation -framework Metal -framework QuartzCore -framework CoreGraphics
+    "$DRIVER_BUILD/$BRIDGE" -Wl,-dead_strip -framework Foundation -framework Metal -framework QuartzCore -framework CoreGraphics
   if [[ -n $base ]]; then
     # the engine's commit: the stand-in case has to fail, and on sparseBufferTier
     st=0
