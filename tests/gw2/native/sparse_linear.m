@@ -7,8 +7,8 @@
  *   sparse_linear <case>
  *
  * Exits 0 when the case passes, 1 when it fails, 77 when the case needs placement sparse and this
- * runner's device says it has none (supportsPlacementSparse NO, or the property throws). A buffer
- * the device should make and doesn't is a failure. Each case is its own process, so an exception
+ * runner's device says it has none (supportsPlacementSparse answers NO). Any other buffer the
+ * device doesn't make is a failure, also where that property throws. Each case is its own process, so an exception
  * or a crash in one can't hide another.
  *
  * Stand-in cases, on any Mac: mtl_new_texture_with_descriptor_linear gets a stand-in for the
@@ -217,14 +217,13 @@ real(id<MTLDevice> dev, const char *kind)
       return 1;
    }
    if (!buffer) {
-      /* only a case that needs placement sparse may skip, and only where the device has none */
-      int ps = strcmp(kind, "nocopy") ? placement_sparse(dev) : 1;
-      if (ps != 1) {
-         printf("skip: this runner's Metal made no %s buffer, and its device has %s placement sparse\n",
-                kind, ps == 0 ? "no" : "maybe no");
+      /* only a case that needs placement sparse may skip, and only where the device says it has
+       * none */
+      if (strcmp(kind, "nocopy") && placement_sparse(dev) == 0) {
+         printf("skip: this runner's Metal made no %s buffer, and its device has no placement sparse\n", kind);
          return SKIP;
       }
-      printf("FAIL: the device has placement sparse, but made no %s buffer\n", kind);
+      printf("FAIL: the device made no %s buffer\n", kind);
       return 1;
    }
 

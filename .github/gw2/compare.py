@@ -44,6 +44,10 @@ import tempfile
 
 ARTIFACT = re.compile(r"^_OUTLINED_FUNCTION_\d+$|\.cold\.\d+$")
 SELECTOR = "sparseBufferTier"
+# What the fix takes out of the engine's file, and nothing else may differ: the selector, and the
+# import clang calls for respondsToSelector:, whose only use in the driver was the same line (my
+# build may still import it if anything else calls it, which the report says)
+FIX_IMPORTS = {"objc_opt_respondsToSelector"}
 DYLIB = "src/kosmickrisp/vulkan/libvulkan_kosmickrisp.dylib"
 # the object the fix changes, which every record has to have, so an empty or wrong list of
 # objects can't pass
@@ -210,12 +214,16 @@ def gate(mine, theirs, mine_json, theirs_json):
     r.check(mine.exports == theirs.exports, f"exports the engine's {len(theirs.exports)} symbols: {listing(theirs.exports, 5)}",
             f"exports differ: missing {listing(set(theirs.exports) - set(mine.exports))}; "
             f"extra {listing(set(mine.exports) - set(theirs.exports))}")
-    if mine.imports == theirs.imports:
-        r.ok(f"imports the engine's {len(theirs.imports)} symbols, each from the same library")
+    mi = {n: l for n, l in mine.imports.items() if n not in FIX_IMPORTS}
+    ti = {n: l for n, l in theirs.imports.items() if n not in FIX_IMPORTS}
+    if mi == ti:
+        r.ok(f"imports the engine's {len(ti)} symbols, each from the same library, besides the fix's "
+             f"{listing(FIX_IMPORTS)}")
     else:
-        diff = {f"{n} ({mine.imports.get(n)} / {theirs.imports.get(n)})"
-                for n in set(mine.imports) | set(theirs.imports) if mine.imports.get(n) != theirs.imports.get(n)}
+        diff = {f"{n} ({mi.get(n)} / {ti.get(n)})" for n in set(mi) | set(ti) if mi.get(n) != ti.get(n)}
         r.fail(f"imports differ (mine / the engine's): {listing(diff)}")
+    print(f"- report, not the gate: of the fix's imports, mine has {listing(FIX_IMPORTS & set(mine.imports)) or 'none'}, "
+          f"the engine's {listing(FIX_IMPORTS & set(theirs.imports)) or 'none'}")
     segments = lambda m: [(s["name"], s["maxprot"], s["initprot"]) for s in m.segments]
     sections = lambda m: sorted((s["name"], s["type"], s["flags"]) for s in m.sections)
     r.check(segments(mine) == segments(theirs), f"the engine's {len(theirs.segments)} segments by name, order and kind",
@@ -230,11 +238,13 @@ def gate(mine, theirs, mine_json, theirs_json):
     sized = sorted(n for n in nm & nt if fm[n] != ft[n])
     print(f"- report, not the gate: {len(sized)} of {len(nt)} named functions differ in size"
           + (f": {listing(sized, 40)}" if sized else ""))
-    sels = mine.selectors()
-    r.check(len(sels) >= len(theirs.selectors()) // 2, f"{len(sels)} entries of __objc_selrefs read",
-            f"only {len(sels)} entries of __objc_selrefs read, the engine's file has {len(theirs.selectors())}")
+    sels, tsels = mine.selectors(), theirs.selectors()
     r.check(SELECTOR not in sels, f"none of the {len(sels)} entries of __objc_selrefs is `{SELECTOR}`",
             f"__objc_selrefs has `{SELECTOR}` {sels.count(SELECTOR)} time(s) among {len(sels)} entries")
+    # every other selector the engine's file sends, and no other: a table read short can't pass
+    want = set(tsels) - {SELECTOR}
+    r.check(set(sels) - {SELECTOR} == want, f"the other {len(want)} selectors are the engine's",
+            f"selectors differ: missing {listing(want - set(sels))}; extra {listing(set(sels) - want - {SELECTOR})}")
     with open(mine_json) as f:
         jm = json.load(f)
     with open(theirs_json) as f:
@@ -456,11 +466,24 @@ def selftest(engine, engine_json):
     lib = data.index(b"/usr/lib/libz.1.dylib\0")
     run("another library", patched_copy(lambda d: d.__setitem__(lib + len("/usr/lib/libz."), ord("2"))),
         True, "loads [")
-    # the selector renamed in __objc_methname: the selector check holds, nothing else changes
+    # the selector renamed in __objc_methname: another selector than the engine's, which fails
     names = m.section("__TEXT,__objc_methname")
     at = data.index(SELECTOR.encode() + b"\0", names["offset"], names["offset"] + names["size"])
-    out = run("the selector's name changed", patched_copy(lambda d: d.__setitem__(at, ord("S"))),
-              False, f"none of the")
+    run("the selector's name changed", patched_copy(lambda d: d.__setitem__(at, ord("S"))),
+        True, "extra `SparseBufferTier`")
+    # what my build should be: the selector's one entry gone (here pointing at another selector's
+    # name), and the fix's import gone. Every check holds.
+    refs = m.section("__DATA,__objc_selrefs")
+    i = m.selectors().index(SELECTOR)
+    first = data[refs["offset"]:refs["offset"] + 8]
+    imp = sym_index(lambda n, t, s: n == "_objc_opt_respondsToSelector")
+
+    def fixed(d):
+        d[refs["offset"] + i * 8:refs["offset"] + i * 8 + 8] = first
+        # (the import made a debugger-only symbol, which neither list reads)
+        d[entry(imp) + 4] = 0x20
+    out = run("the fix's file", patched_copy(fixed), False, "none of the 296 entries")
+    status.append("mine has none, the engine's `objc_opt_respondsToSelector`" in out)
     # an empty selector table: not a pass
     refs_hdr = next(o for c, o, _ in m.commands if c == LC_SEGMENT_64 and data[o + 8:o + 24].rstrip(b"\0") == b"__DATA")
     nsects = struct.unpack_from("<I", data, refs_hdr + 64)[0]
@@ -473,6 +496,9 @@ def selftest(engine, engine_json):
         good = "not a nonempty list" in str(e)
     print(f"{'ok' if good else 'WRONG'}: an empty selector table is refused")
     status.append(good)
+    # a table read short: the selector set isn't the engine's
+    run("a selector table read short", patched_copy(lambda d: struct.pack_into("<Q", d, sect + 40, 266 * 8)), True,
+        "selectors differ: missing")
     # another ICD manifest
     with tempfile.TemporaryDirectory() as t:
         other = os.path.join(t, "icd.json")
