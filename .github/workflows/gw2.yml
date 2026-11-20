@@ -1,0 +1,408 @@
+# gw2 (jdrly/gw2-on-mac#339): my KosmicKrisp (libvulkan_kosmickrisp.dylib) for Mach9
+# $MACH9_VERSION's engine, built on GitHub's runner the way Mach9's CI built the engine's, and
+# checked against the engine's file. Nothing here runs on my Mac.
+#
+# build: Mach9's bin/build-mesa.sh in two stages (.github/gw2/mesa.zsh), in the engine's paths,
+#   on $RUNNER with Xcode $XCODE_VERSION and macOS 26.4. Stage 1 builds the host tools (mesa_clc,
+#   vtn_bindgen2, kk_clc) against Homebrew's LLVM from $BASE_COMMIT, the commit the engine's
+#   KosmicKrisp was built from; the step fails when this commit changes one of their inputs.
+#   Stage 2 configures Mach9's whole tree (KosmicKrisp, Zink, EGL) with Mach9's options and builds
+#   only the driver, its ICD manifest and the bridge library. Then, one after the other:
+#   - $BASE_COMMIT, recorded: each object the driver links, its inputs and compile command.
+#     tests/gw2/native/sparse_linear.m built against this bridge (-DGW2_BASE) has to fail its
+#     stand-in case on sparseBufferTier, which shows the test tests the bug.
+#   - this commit in the same tree, every object of the driver deleted and compiled again, with
+#     the version string of $BASE_COMMIT, so the generated git_sha1.h is the same in both.
+#     .github/gw2/compare.py patched: each object none of whose inputs the commit changes is the
+#     base build's byte for byte; the summary lists the objects that differ and what touched them.
+#   - this commit with its own version string: the file that ships. compare.py gate checks it
+#     against the engine's file with the structural gate (the engine's install name, rpaths,
+#     libraries, minos, exports, imports, segments, sections and named functions), checks that
+#     no __objc_selrefs entry is sparseBufferTier, and that the ICD manifest is the engine's.
+#     The engine's runner and Xcode were $ENGINE_RUNNER and $ENGINE_XCODE_VERSION. Mine aren't,
+#     since macos-26 runners stopped being assigned to my forks on 2026-11-12, so the gate is the
+#     structural one, as in my FEX and Wine forks, never byte for byte.
+#   - sparse_linear's cases on this commit's bridge, natively on the runner's Metal: the stand-in
+#     cases (the flag decides placementSparsePageSize, and nothing sends sparseBufferTier), and
+#     linear textures on a plain, a heap, a host memory and a sparse buffer. Where Metal's own
+#     sparseBufferTier works (macOS 27), it has to agree with the flag the driver passes. The
+#     summary says which macOS ran it and whether sparseBufferTier threw there.
+#   Artifact kosmickrisp-arm64-<commit>: libvulkan_kosmickrisp.dylib (install name
+#   @loader_path/libvulkan_kosmickrisp.dylib, signed ad hoc as Mach9's bundle signs it), its ICD
+#   manifest with the engine's library_path, Mesa's licence (LICENSE.rst) and VERSION, kept 7 days.
+# A push whose tree a green pull request run tested, on a head that contains the push's parent,
+#   builds this commit, gates and publishes it, without the base build, the object compare and
+#   the native test, which that run did. Any other push runs everything.
+# lint: actionlint (.github/actionlint.yaml names the xcode-27 label), the Python script compiles,
+#   zsh -n on the build script, and compare.py's self-test on the engine's file.
+# publish: after the others are green, packs kosmickrisp-arm64-<commit>.tar.xz and prints its
+#   sha256. For a push to gw2-on-mac it adds it to the pre-release arm64-builds, the one release
+#   this workflow makes, never marked latest, and keeps the 30 newest.
+name: GW2
+
+on:
+  pull_request:
+    branches: [gw2-on-mac]
+  push:
+    branches: [gw2-on-mac]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gw2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The PR's own commit, not GitHub's merge commit, so VERSION and the version string name it
+  COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+  # The build's scripts and the native test, from the commit this workflow file is from: on a pull
+  # request that is GitHub's merge commit (github.sha), so the workflow and the scripts it calls
+  # always agree. The source under test stays $COMMIT.
+  GW2: ${{ github.workspace }}/gw2-ci/.github/gw2
+  TESTS: ${{ github.workspace }}/gw2-ci/tests/gw2
+  # athei/mesa's commit Mach9 0.4.0's KosmicKrisp was built from (its version string says
+  # git-d62ee13d18), where gw2-on-mac starts
+  BASE_COMMIT: d62ee13d1802dd076267611dbbc09cddece95f9c
+  # The runner and Xcode my build uses, the build job's runs-on through the anchor
+  RUNNER: &runner xcode-27
+  XCODE_VERSION: "27.2"
+  # What Mach9's release run of v0.4.0 used (athei/mach9 run 44031759609): Xcode 26.6 (SDK 26.5,
+  # clang-2100.1.1.101) on the macos-26 image (macos-26-arm64 20261102.0473.1), its
+  # pins/redist.env and bin/lib/profile.sh (macOS 26.4)
+  ENGINE_RUNNER: macos-26
+  ENGINE_XCODE_VERSION: "26.6"
+  MESA_PYTHON_REQUIREMENTS: mako==1.4.3 markupsafe==3.0.4 packaging==26.3 pyyaml==6.0.3
+  MACH9_VERSION: v0.4.0
+  MACH9_SHA256: 3b81aac9b93d5652872673b400769ec525f3bc2f1f7e2ec82c9f851d0a0db05d
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build my KosmicKrisp for the arm64 engine
+    runs-on: *runner
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # to find the pull request whose run tested a pushed tree
+      actions: read
+      pull-requests: read
+    # One macOS build at a time in this repository, whatever the pull request or branch: a second
+    # one waits, and nothing in progress is cancelled by it.
+    concurrency:
+      group: gw2-macos-build
+      cancel-in-progress: false
+    env:
+      SRC: /Users/runner/work/mach9/mach9/src-mesa
+      BUILD: /Users/runner/work/mach9/mach9/build/mesa
+      MACOSX_DEPLOYMENT_TARGET: "26.4"
+      ENGINE: ${{ github.workspace }}/toolchains/engine
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+    steps:
+      # first, so a missing Xcode stops the job within a minute
+      - name: Select Xcode
+        run: |
+          {
+            echo "### Runner"
+            echo '```'
+            echo "image $ImageOS $ImageVersion, macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion)), $(sysctl -n hw.ncpu) CPUs"
+            ls -d /Applications/Xcode_*.app
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          app=/Applications/Xcode_$XCODE_VERSION.app
+          if [[ ! -d $app ]]; then
+            echo "::error::Xcode $XCODE_VERSION isn't on this runner's image ($ImageOS $ImageVersion). Pick one it has in XCODE_VERSION."
+            exit 1
+          fi
+          sudo xcode-select -s "$app"
+          echo "runner $RUNNER, Xcode $XCODE_VERSION (the engine's: $ENGINE_RUNNER, Xcode $ENGINE_XCODE_VERSION): the structural gate" |
+            tee -a "$GITHUB_STEP_SUMMARY"
+      # A push skips the base build, the object compare and the native test when a green pull
+      # request run tested the same tree, and the pushed commit's parent (gw2-on-mac before the
+      # push) is an ancestor of that run's head, so every gw2-on-mac the run could have merged was
+      # in it. A lookup that fails counts as "not tested". A pull request runs everything.
+      - name: Which tests this run owes
+        id: tested
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          green=0
+          if [[ $GITHUB_EVENT_NAME == push ]]; then
+            tree=$(gh api "repos/$GH_REPO/commits/$COMMIT" -q .commit.tree.sha) || tree=""
+            parent=$(gh api "repos/$GH_REPO/commits/$COMMIT" -q '.parents[0].sha // empty') || parent=""
+            while read -r pr head; do
+              [[ -n $pr && -n $tree && -n $parent ]] || continue
+              [[ $(gh api "repos/$GH_REPO/commits/$head" -q .commit.tree.sha) == "$tree" ]] || continue
+              [[ $(gh api "repos/$GH_REPO/compare/$parent...$head" -q .status) == ahead ]] || continue
+              run=$(gh api "repos/$GH_REPO/actions/workflows/gw2.yml/runs?event=pull_request&status=success&head_sha=$head" \
+                -q '.workflow_runs[0].html_url // empty') || run=""
+              if [[ -n $run ]]; then
+                green=1
+                echo "pull request #$pr's green run tested this tree: $run" | tee -a "$GITHUB_STEP_SUMMARY"
+                break
+              fi
+            done < <(gh api "repos/$GH_REPO/commits/$COMMIT/pulls" -q '.[] | select(.merged_at != null) | "\(.number) \(.head.sha)"')
+            if (( !green )); then
+              echo "::warning::no green pull request run tested the tree of $COMMIT, so this push runs every test" |
+                tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "green=$green" >>"$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: gw2-ci
+          sparse-checkout: |
+            .github/gw2
+            tests/gw2
+          persist-credentials: false
+      - name: The scripts are this workflow's
+        run: |
+          [[ $(git -C gw2-ci rev-parse HEAD) == "$GITHUB_SHA" && -f $GW2/mesa.zsh && -f $GW2/compare.py && -f $TESTS/native/sparse_linear.m ]] ||
+            { echo "::error::the scripts of $GITHUB_SHA, the commit this workflow file is from, aren't there"; exit 1; }
+          zsh -n "$GW2/mesa.zsh"
+          echo "scripts from $GITHUB_SHA, source from $COMMIT"
+      # The source at this commit, and the engine's commit beside it, one commit deep each
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.COMMIT }}
+          path: src
+          persist-credentials: false
+      - name: The engine's commit
+        run: |
+          git -C src fetch -q --depth 1 origin "$BASE_COMMIT"
+          git -C src diff --name-only "$BASE_COMMIT" "$COMMIT" >"$RUNNER_TEMP/changed.txt"
+          echo "this commit changes $(wc -l <"$RUNNER_TEMP/changed.txt" | tr -d ' ') files over $BASE_COMMIT:"
+          cat "$RUNNER_TEMP/changed.txt"
+          mkdir -p "${SRC%/*}"
+          mv src "$SRC"
+
+      - name: Restore Mach9
+        id: mach9
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: mach9-tarball-${{ env.MACH9_VERSION }}
+          path: toolchains/mach9.tar.xz
+      - name: Download Mach9
+        if: steps.mach9.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchains
+          curl -fsSL --retry 3 -o toolchains/mach9.tar.xz \
+            "https://github.com/athei/mach9/releases/download/$MACH9_VERSION/wine-$MACH9_VERSION-macos-arm64.tar.xz"
+      - name: Save Mach9
+        if: steps.mach9.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: mach9-tarball-${{ env.MACH9_VERSION }}
+          path: toolchains/mach9.tar.xz
+      - name: Unpack the engine's KosmicKrisp
+        run: |
+          echo "$MACH9_SHA256  toolchains/mach9.tar.xz" | shasum -a 256 -c
+          mkdir -p "$ENGINE"
+          tar -xf toolchains/mach9.tar.xz -C "$ENGINE" --strip-components 1 \
+            wine/lib/external/libvulkan_kosmickrisp.dylib wine/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json
+          find "$ENGINE" -type f -exec shasum -a 256 {} +
+
+      # Mach9's pins/brew-formulae, as far as build-mesa.sh uses them (MESA_FORMULAE, bison), and
+      # meson and ninja
+      - name: Install Homebrew's LLVM, SPIR-V tools, bison, meson and ninja
+        run: |
+          brew install llvm spirv-llvm-translator spirv-tools bison meson ninja pkgconf
+          {
+            echo "### Toolchain"
+            echo '```'
+            echo "Xcode $(xcodebuild -version | sed -n 's/^Xcode //p') (macOS SDK $(xcrun -sdk macosx --show-sdk-version)), $(/usr/bin/clang --version | sed -n 1p)"
+            echo "Homebrew: LLVM $(/opt/homebrew/opt/llvm/bin/llvm-config --version), $(brew list --versions spirv-llvm-translator spirv-tools bison meson ninja | paste -sd ' ' -)"
+            echo "python3 $(python3 -c 'import platform; print(platform.python_version())'), $MESA_PYTHON_REQUIREMENTS, macOS $MACOSX_DEPLOYMENT_TARGET"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Stage 1, the host tools, from the engine's commit
+        run: |
+          git -C "$SRC" checkout -q --detach "$BASE_COMMIT"
+          "$GW2/mesa.zsh" tools
+          "$GW2/mesa.zsh" tool-inputs "$RUNNER_TEMP/changed.txt"
+      - name: Configure stage 2
+        run: |
+          "$GW2/mesa.zsh" setup
+
+      - name: Build the engine's commit
+        id: base
+        if: steps.tested.outputs.green != '1'
+        run: |
+          "$GW2/mesa.zsh" build "$BASE_COMMIT"
+          "$GW2/mesa.zsh" record "$RUNNER_TEMP/base-record"
+      - name: The native test fails on the engine's commit
+        if: steps.tested.outputs.green != '1'
+        run: |
+          {
+            echo "### The native test on the engine's commit"
+            echo '```'
+            "$GW2/mesa.zsh" test "$RUNNER_TEMP/native-base" base
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Build this commit, every object again
+        id: head
+        if: steps.tested.outputs.green != '1'
+        run: |
+          git -C "$SRC" checkout -q --detach "$COMMIT"
+          "$GW2/mesa.zsh" clean-objects
+          "$GW2/mesa.zsh" build "$BASE_COMMIT"
+          "$GW2/mesa.zsh" record "$RUNNER_TEMP/head-record"
+      - name: Compare the objects
+        if: steps.tested.outputs.green != '1'
+        run: |
+          changed=()
+          while IFS= read -r f; do changed+=("$f"); done <"$RUNNER_TEMP/changed.txt"
+          python3 -I "$GW2/compare.py" patched "$RUNNER_TEMP/base-record" "$RUNNER_TEMP/head-record" "${changed[@]}" \
+            | tee "$RUNNER_TEMP/objects.md" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build this commit with its own version string
+        run: |
+          git -C "$SRC" checkout -q --detach "$COMMIT"
+          "$GW2/mesa.zsh" build "$COMMIT"
+          "$GW2/mesa.zsh" stage dist
+      - name: The gate against the engine's file
+        run: |
+          python3 -I "$GW2/compare.py" gate dist/libvulkan_kosmickrisp.dylib "$ENGINE/lib/external/libvulkan_kosmickrisp.dylib" \
+            dist/kosmickrisp_mesa_icd.aarch64.json "$ENGINE/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json" \
+            | tee "$RUNNER_TEMP/gate.md" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: failed-${{ env.COMMIT }}
+          path: |
+            dist
+            ${{ runner.temp }}/*-record/record.json
+          retention-days: 7
+      - name: The native test on this commit
+        if: steps.tested.outputs.green != '1'
+        run: |
+          {
+            echo "### The native test on this commit"
+            echo '```'
+            "$GW2/mesa.zsh" test "$RUNNER_TEMP/native"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: VERSION
+        run: |
+          {
+            echo "commit: $COMMIT"
+            echo "version: $(grep -o '(git-[0-9a-f]*)' "$BUILD/driver/src/git_sha1.h"), Mesa $(cat "$SRC/VERSION")"
+            echo "base: $BASE_COMMIT"
+            echo "engine: Mach9 $MACH9_VERSION (wine-$MACH9_VERSION-macos-arm64.tar.xz, sha256 $MACH9_SHA256)"
+            echo "toolchain: $RUNNER ($ImageOS $ImageVersion), Xcode $(xcodebuild -version | sed -n 's/^Xcode //p') (macOS SDK $(xcrun -sdk macosx --show-sdk-version)), $(/usr/bin/clang --version | sed -n 1p), macOS $MACOSX_DEPLOYMENT_TARGET"
+            echo "libvulkan_kosmickrisp.dylib: sha256 $(shasum -a 256 dist/libvulkan_kosmickrisp.dylib | cut -d' ' -f1)"
+            echo
+            cat "$RUNNER_TEMP/gate.md"
+          } >dist/VERSION
+          cat dist/VERSION
+          ls -l dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kosmickrisp-arm64-${{ env.COMMIT }}
+          path: dist
+          retention-days: 7
+          if-no-files-found: error
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.COMMIT }}
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          f="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/$f"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$f" | sha256sum -c
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color .github/workflows/gw2.yml
+      # GitHub's Ubuntu image has no zsh
+      - name: zsh
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends zsh
+      - name: Scripts
+        run: |
+          python3 -I -m py_compile .github/gw2/compare.py
+          zsh -n .github/gw2/mesa.zsh
+      # the engine's file only, from the release tarball, by its sha256
+      - name: The gate's self-test
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/mach9.tar.xz" \
+            "https://github.com/athei/mach9/releases/download/$MACH9_VERSION/wine-$MACH9_VERSION-macos-arm64.tar.xz"
+          echo "$MACH9_SHA256  $RUNNER_TEMP/mach9.tar.xz" | sha256sum -c
+          mkdir "$RUNNER_TEMP/engine"
+          tar -xf "$RUNNER_TEMP/mach9.tar.xz" -C "$RUNNER_TEMP/engine" --strip-components 1 \
+            wine/lib/external/libvulkan_kosmickrisp.dylib wine/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json
+          python3 -I .github/gw2/compare.py selftest "$RUNNER_TEMP/engine/lib/external/libvulkan_kosmickrisp.dylib" \
+            "$RUNNER_TEMP/engine/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json"
+
+  publish:
+    name: Publish
+    needs: [build, lint]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    # Two pushes never upload at once: the build job's group runs one build at a time and never
+    # cancels it.
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE: arm64-builds
+      NAME: kosmickrisp-arm64-${{ github.event.pull_request.head.sha || github.sha }}.tar.xz
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: kosmickrisp-arm64-${{ env.COMMIT }}
+          path: dist
+      - name: Pack
+        run: |
+          cd dist
+          chmod 755 libvulkan_kosmickrisp.dylib
+          chmod 644 kosmickrisp_mesa_icd.aarch64.json LICENSE.rst VERSION
+          tar --sort=name --owner=0 --group=0 --numeric-owner -cJf "../$NAME" \
+            libvulkan_kosmickrisp.dylib kosmickrisp_mesa_icd.aarch64.json LICENSE.rst VERSION
+          cd ..
+          tar -tvJf "$NAME"
+          sha256sum "$NAME" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload to the pre-release ${{ env.RELEASE }}
+        if: github.event_name == 'push' && github.ref == 'refs/heads/gw2-on-mac'
+        run: |
+          if ! gh release view "$RELEASE" >/dev/null 2>&1; then
+            gh release create "$RELEASE" --prerelease --latest=false --target "$COMMIT" --title "arm64 builds of my KosmicKrisp" \
+              --notes "CI output for GW2 on Mac's arm64 line, not a release of Mesa: my KosmicKrisp (libvulkan_kosmickrisp.dylib and its ICD manifest) for Mach9 $MACH9_VERSION's engine, built and checked by .github/workflows/gw2.yml for each push to gw2-on-mac. One asset per commit, kosmickrisp-arm64-<full sha>.tar.xz; the 30 newest stay."
+          fi
+          id=$(gh api "repos/$GH_REPO/releases/tags/$RELEASE" -q .id)
+          uploaded=0
+          # grep without -q, which would end the pipe early and fail it under pipefail
+          if gh release view "$RELEASE" --json assets -q '.assets[].name' | grep -xF "$NAME" >/dev/null; then
+            echo "$NAME is there already, and a published file is never replaced"
+          else
+            gh release upload "$RELEASE" "$NAME"
+            uploaded=1
+          fi
+          # the 30 newest stay
+          gh api --paginate "repos/$GH_REPO/releases/$id/assets?per_page=100" -q '.[] | [.created_at, .id, .name] | @tsv' |
+            grep -P "\tkosmickrisp-arm64-[0-9a-f]{40}\\.tar\\.xz\$" | sort -r | tail -n +31 | while IFS=$'\t' read -r _ asset old; do
+              echo "deleting $old"
+              gh api -X DELETE "repos/$GH_REPO/releases/assets/$asset"
+            done
+          digest=$(gh api "repos/$GH_REPO/releases/tags/$RELEASE" -q ".assets[] | select(.name == \"$NAME\") | .digest")
+          echo "$RELEASE has $NAME, $digest" | tee -a "$GITHUB_STEP_SUMMARY"
+          [[ $digest == sha256:* ]]
+          (( !uploaded )) || [[ $digest == "sha256:$(sha256sum "$NAME" | cut -d' ' -f1)" ]]
+          latest=$(gh api "repos/$GH_REPO/releases/latest" -q .tag_name 2>/dev/null || true)
+          echo "releases/latest: ${latest:-none}"
+          [[ $latest != "$RELEASE" ]]
