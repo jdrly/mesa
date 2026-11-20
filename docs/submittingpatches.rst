@@ -43,60 +43,12 @@ If you want to contribute code to Mesa, we highly recommend the following:
 In case you are not familiar with the code base, it's okay to ask for help
 and guidance from more experienced developers.
 
-The submitter is responsible for the code change, regardless of where
-that code change came from, whether they wrote it themselves, used an
-"AI" or other tool, or got it from someone else. That responsibility
-includes making sure that the code change can be submitted under the
-MIT license that Mesa uses.
-
-This extends through the use of the tool you are using to submit your
-contributions. It is not allowed to use autonomously acting tools to
-submit any contributions, that is every contributions needs explicit
-oversight and your review. This includes interactions with GitLab issues
-or MRs in any autonomous way through such tools. It will be decided by the
-community and maintainers which and how such tooling will be used within
-the Mesa project and might be made available for other contributors to use
-through our GitLab instance. Do not under any circumstances wire up any
-review bot or similar tools.
-
-The submitter needs to understand what code they are changing,
-what the change does, and justify that change in the commit messages.
-Using coding assistants or "AI" or other tools does not grant additional
-privileges or reduce our expectations.
-
-"AI" shouldn't be used to generate code comments, commit messages, and
-Gitlab comments. Every contributor should communicate with the community
-directly without other people or tools in the middle. We want contributors
-to develop and practice their own communication and technical writing.
-Those skills deteriorate if they are not used.
-
-Consequentially, contributors can use "AI" for research etc., but all text
-should be their own words. They should get to know the community through
-normal communication and the community should be able to get to know them.
-
-Disclosure is always required when "AI" was involved in the creative
-process of coming up with the code, except in the following cases:
-
-- Trivial or small changes that wouldn't be copyrightable regardless of
-  "AI" involvement. For example something like a "min" function fit this
-  category.
-- Mechanical changes where the expected result is obvious and not up to
-  interpretation, ie. when it would be the same regardless of what
-  tooling was used. For example, autocomplete, refactoring the name of a
-  variable and similar activities fit this category. In these cases it is
-  still recommended (but not required) to disclose the tool used,
-  eg. "AI", "sed", "cocinelle", etc. in order to ease the review process.
-
-We require the following scheme to disclose the level "AI" tooling was
-involved:
-
-- ``Assisted-by: LLM`` for when "AI" was involved in making
-  decisions or also generated parts of the code.
-- ``Generated-by: LLM`` for when almost all the code was
-  generated through "AI".
-
-Do not advertise the model. Do not use the ``Co-authored-by`` tag as this one is
-reserved for human co-authors.
+In my fork jdrly/mesa, Mesa's rules on "AI" in contributions are replaced
+by the fork's rule in ``AGENTS.md``: the fork contributes nothing to Mesa,
+its patches are written with AI, each such commit says so in its body and
+keeps the trailer ``Generated-by: LLM``, and nothing from it goes to
+Mesa's GitLab or to athei/mesa. Mesa's own text on "AI" is in upstream's
+copy of this file.
 
 If you don't know programming (and don't want to learn), but you are
 interested in the Mesa project, there are plenty of other ways to
