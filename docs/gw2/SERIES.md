@@ -36,7 +36,8 @@ merges squashed, so the series is `gw2-on-mac`'s head itself, pushed under the s
 ## Machine blocks
 
 My workspace's replay script reads these blocks by their fence label. Paths are globs where `*`
-matches `/` too, and the first rule that matches wins. No topic is skipped.
+matches `/` too, and the first rule that matches wins. `series-skip` is empty, since no topic is
+skipped.
 
 ```series-topics
 9d08aebd96a01203d1a086fbbbfdf5e5e8db6d75 sparse-record
@@ -50,6 +51,9 @@ docs/gw2/SERIES.md docs
 mode disjoint
 sparse-record
 docs
+```
+
+```series-skip
 ```
 
 ```series-titles
